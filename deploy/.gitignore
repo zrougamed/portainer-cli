@@ -1,0 +1,13 @@
+# Generated token env file — contains secrets, never commit
+.portainer-tui.env
+
+# Override compose files (local customisations)
+docker-compose.override.yml
+
+# Portainer data if using bind mount instead of named volume
+data/
+
+# Mac / Editor
+.DS_Store
+.idea/
+*.swp

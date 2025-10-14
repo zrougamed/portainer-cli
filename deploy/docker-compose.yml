@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Portainer CE — Docker Compose
+# ─────────────────────────────────────────────────────────────────────────────
+# Credentials (change before production use!):
+#   UI / API:  admin / adminpassword   →  http://localhost:9000
+#   HTTPS:                             →  https://localhost:9443
+#
+# After startup, get an API token:
+#   make token
+#   OR
+#   ./scripts/get-token.sh
+#
+# Then configure portainer-tui:
+#   portainer-tui login   (URL: http://localhost:9000)
+#   OR set env vars:
+#   export PORTAINER_URL=http://localhost:9000
+#   export PORTAINER_TOKEN=<token from above>
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+
+    # Use --admin-password-file to avoid bcrypt $$ escaping in compose
+    command:
+      - "--admin-password-file=/run/secrets/portainer_admin_password"
+      - "--no-analytics"
+      - "--log-level=INFO"
+
+    ports:
+      - "9000:9000"    # HTTP  (API + UI)
+      - "9443:9443"    # HTTPS (API + UI)
+      - "8000:8000"    # Edge agent tunnel
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+
+    secrets:
+      - portainer_admin_password
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9000/api/system/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    labels:
+      - "com.portainer.description=Portainer CE"
+
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+# The file secrets/portainer_admin_password contains the PLAINTEXT password.
+# Portainer reads the file and hashes it internally.
+secrets:
+  portainer_admin_password:
+    file: ./secrets/portainer_admin_password
+
+# ─── Volumes ─────────────────────────────────────────────────────────────────
+volumes:
+  portainer_data:
+    name: portainer_data

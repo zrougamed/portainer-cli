@@ -1,0 +1,17 @@
+# Portainer TUI Configuration
+# Place this at ~/.config/portainer-tui/config.yaml
+
+# Portainer server URL
+url: http://localhost:9000
+
+# Authentication - use ONE of the following:
+
+# Option 1: JWT token (from login command or Portainer UI)
+token: ""
+
+# Option 2: API key (Portainer Community edition X-API-Key)
+api_key: ""
+
+# Option 3: Username/password (token is fetched automatically)
+username: ""
+password: ""
