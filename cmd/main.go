@@ -64,11 +64,13 @@ func buildClient() (*api.Client, error) {
 		cfg.APIKey = cfgKey
 	}
 
-	// Use API key if token not set
-	token := cfg.Token
-	if token == "" {
-		token = cfg.APIKey
+	// Use API key if set — must NOT also send Bearer header (Portainer 403s)
+	if cfg.APIKey != "" {
+		return api.NewClientWithAPIKey(cfg.URL, cfg.APIKey), nil
 	}
+
+	// Fall back to JWT token
+	token := cfg.Token
 	if token == "" && cfg.Username != "" {
 		// Authenticate with username/password
 		client := api.NewClient(cfg.URL, "")

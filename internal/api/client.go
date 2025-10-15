@@ -9,18 +9,41 @@ import (
 	"time"
 )
 
+// AuthMode controls which authentication header is sent.
+// Portainer rejects requests that send both at the same time (403).
+type AuthMode int
+
+const (
+	AuthModeJWT    AuthMode = iota // Authorization: Bearer <token>
+	AuthModeAPIKey                 // X-API-Key: <key>
+)
+
 // Client is the Portainer API client
 type Client struct {
 	BaseURL    string
 	Token      string
+	AuthMode   AuthMode
 	HTTPClient *http.Client
 }
 
-// NewClient creates a new Portainer API client
+// NewClient creates a client that authenticates via JWT Bearer token.
 func NewClient(baseURL, token string) *Client {
 	return &Client{
-		BaseURL: baseURL,
-		Token:   token,
+		BaseURL:  baseURL,
+		Token:    token,
+		AuthMode: AuthModeJWT,
+		HTTPClient: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+	}
+}
+
+// NewClientWithAPIKey creates a client that authenticates via X-API-Key header.
+func NewClientWithAPIKey(baseURL, apiKey string) *Client {
+	return &Client{
+		BaseURL:  baseURL,
+		Token:    apiKey,
+		AuthMode: AuthModeAPIKey,
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -70,9 +93,15 @@ func (c *Client) do(method, path string, body interface{}) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", c.Token) // Community API key support
+	// Portainer rejects requests that send BOTH headers simultaneously (403).
+	// Send only the header that matches the configured auth mode.
+	switch c.AuthMode {
+	case AuthModeAPIKey:
+		req.Header.Set("X-API-Key", c.Token)
+	default: // AuthModeJWT
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 
 	return c.HTTPClient.Do(req)
 }
