@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,6 +21,7 @@ const (
 	ScreenVolumes
 	ScreenLogs
 	ScreenConfirm
+	ScreenError
 )
 
 // App is the root BubbleTea model
@@ -40,6 +42,7 @@ type App struct {
 	volumes    VolumesModel
 	logs       LogsModel
 	confirm    ConfirmModel
+	errModal   ErrorModalModel
 
 	// Active endpoint context
 	activeEndpoint *api.Endpoint
@@ -75,6 +78,7 @@ type ConfirmMsg struct {
 type ConfirmResultMsg struct{ Confirmed bool }
 type ErrMsg struct{ Err error }
 type StatusMsg struct{ Text string }
+type CopyDoneMsg struct{ Success bool }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -95,6 +99,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ErrMsg:
 		a.err = msg.Err
+		// Update the modal with the new error so it's ready when opened
+		if msg.Err != nil {
+			a.errModal = NewErrorModalModel(msg.Err.Error(), a.width, a.height)
+		}
+
+	case CopyDoneMsg:
+		// Bubble the result back into the error modal
+		m, cmd := a.errModal.Update(msg)
+		a.errModal = m.(ErrorModalModel)
+		cmds = append(cmds, cmd)
 
 	case NavigateMsg:
 		a.prevScreen = a.screen
@@ -148,14 +162,33 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Quit
 			}
 		case "esc":
+			if a.screen == ScreenError {
+				a.screen = a.prevScreen
+				return a, nil
+			}
 			if a.screen != ScreenDashboard {
 				a.screen = a.prevScreen
 				if a.screen == ScreenDashboard {
 					a.screen = ScreenDashboard
 				}
 			}
-		case "?", "h":
-			// handled by sub-models
+		case "e":
+			// Open error detail modal if there's an active error
+			if a.err != nil && a.screen != ScreenError {
+				a.prevScreen = a.screen
+				a.screen = ScreenError
+				a.errModal = NewErrorModalModel(a.err.Error(), a.width, a.height)
+				return a, nil
+			}
+		case "x":
+			// Dismiss / clear the current error
+			if a.err != nil {
+				a.err = nil
+			}
+			if a.screen == ScreenError {
+				a.screen = a.prevScreen
+			}
+			return a, nil
 		}
 	}
 
@@ -200,6 +233,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.confirm.Update(msg)
 		a.confirm = m.(ConfirmModel)
 		cmds = append(cmds, cmd)
+
+	case ScreenError:
+		m, cmd := a.errModal.Update(msg)
+		a.errModal = m.(ErrorModalModel)
+		cmds = append(cmds, cmd)
 	}
 
 	return a, tea.Batch(cmds...)
@@ -209,8 +247,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a App) View() string {
 	header := a.renderHeader()
-	var body string
 
+	// Error modal takes the full screen
+	if a.screen == ScreenError {
+		footer := HelpStyle.Render("[c] copy  [x] dismiss  [esc] back")
+		return lipgloss.JoinVertical(lipgloss.Left, header, a.errModal.View(), footer)
+	}
+
+	var body string
 	switch a.screen {
 	case ScreenDashboard:
 		body = a.dashboard.View()
@@ -235,11 +279,81 @@ func (a App) View() string {
 	footer := a.renderFooter()
 
 	if a.err != nil {
-		errBox := ErrorStyle.Render("⚠  " + a.err.Error())
-		body = lipgloss.JoinVertical(lipgloss.Left, errBox, body)
+		errBanner := a.renderErrorBanner()
+		body = lipgloss.JoinVertical(lipgloss.Left, errBanner, body)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+// renderErrorBanner renders a wrapped, multi-line error banner with hint to expand.
+func (a App) renderErrorBanner() string {
+	width := a.width
+	if width == 0 {
+		width = 80
+	}
+
+	prefix := "⚠  "
+	hint := "  [e] details  [x] dismiss"
+
+	// Available width for the message text itself (inside the styled box padding)
+	msgWidth := width - lipgloss.Width(prefix) - 4 // 4 = border/padding
+	if msgWidth < 20 {
+		msgWidth = 20
+	}
+
+	msg := a.err.Error()
+
+	// Word-wrap the message
+	wrapped := wordWrap(msg, msgWidth)
+	lines := strings.Split(wrapped, "\n")
+
+	// First line gets the prefix, rest are indented
+	var sb strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			sb.WriteString(prefix + line)
+		} else {
+			sb.WriteString("\n   " + line) // align with text after prefix
+		}
+	}
+
+	banner := lipgloss.NewStyle().
+		Foreground(colorDanger).
+		Bold(true).
+		Width(width).
+		Render(sb.String())
+
+	hintLine := HelpStyle.Render(hint)
+	return lipgloss.JoinVertical(lipgloss.Left, banner, hintLine)
+}
+
+// wordWrap wraps text at word boundaries to fit within maxWidth runes per line.
+func wordWrap(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return text
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return text
+	}
+
+	var lines []string
+	current := ""
+	for _, word := range words {
+		if current == "" {
+			current = word
+		} else if len(current)+1+len(word) <= maxWidth {
+			current += " " + word
+		} else {
+			lines = append(lines, current)
+			current = word
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a App) renderHeader() string {
@@ -270,6 +384,9 @@ func (a App) renderHeader() string {
 
 func (a App) renderFooter() string {
 	help := "[↑↓] navigate  [enter] select  [esc] back  [q] quit  [r] refresh"
+	if a.err != nil {
+		help += "  [e] error detail  [x] dismiss error"
+	}
 	return HelpStyle.Render(help)
 }
 
@@ -291,6 +408,8 @@ func (a App) screenName() string {
 		return "Logs"
 	case ScreenConfirm:
 		return "Confirm"
+	case ScreenError:
+		return "Error Detail"
 	}
 	return ""
 }
@@ -303,4 +422,5 @@ func (a *App) propagateSize() {
 	a.images.SetSize(a.width, inner)
 	a.volumes.SetSize(a.width, inner)
 	a.logs.SetSize(a.width, inner)
+	a.errModal.SetSize(a.width, inner)
 }
