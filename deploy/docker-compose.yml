@@ -35,7 +35,7 @@ services:
       - "8000:8000"    # Edge agent tunnel
 
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
 
     secrets:

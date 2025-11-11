@@ -18,16 +18,18 @@ const (
 )
 
 type StacksModel struct {
-	client     *api.Client
-	table      table.Model
-	stacks     []api.Stack
-	loading    bool
-	status     string
-	subview    stacksSubview
-	deployArea textarea.Model
-	deployName string
-	width      int
-	height     int
+	client             *api.Client
+	table              table.Model
+	stacks             []api.Stack
+	loading            bool
+	status             string
+	subview            stacksSubview
+	deployArea         textarea.Model
+	deployName         string
+	activeEndpointID   int // set by App when an endpoint is selected
+	activeEndpointName string
+	width              int
+	height             int
 }
 
 type stacksLoadedMsg struct{ stacks []api.Stack }
@@ -95,16 +97,22 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+s":
 				content := m.deployArea.Value()
 				name := m.deployName
+				endpointID := m.activeEndpointID
+				endpointName := m.activeEndpointName
+				if endpointID == 0 {
+					return m, func() tea.Msg {
+						return ErrMsg{fmt.Errorf("no environment selected — go to Environments first and select one")}
+					}
+				}
 				return m, func() tea.Msg {
 					return ConfirmMsg{
-						Prompt: fmt.Sprintf("Deploy stack '%s'?", name),
+						Prompt: fmt.Sprintf("Deploy stack '%s' to endpoint '%s'?", name, endpointName),
 						OnYes: func() tea.Msg {
-							// endpointID 1 as default - in production would pick from active endpoint
-							_, err := m.client.DeployStack(1, name, content, nil)
+							_, err := m.client.DeployStack(endpointID, name, content, nil)
 							if err != nil {
 								return ErrMsg{err}
 							}
-							return stackActionDoneMsg{"Stack deployed: " + name}
+							return stackActionDoneMsg{"✓ Stack deployed: " + name}
 						},
 					}
 				}
@@ -208,10 +216,19 @@ func (m StacksModel) View() string {
 	if m.subview == stacksDeploy {
 		help := HelpStyle.Render("[ctrl+s] deploy  [esc] cancel")
 		nameLabel := KeyStyle.Render("Stack name: ") + ValueStyle.Render(m.deployName)
+
+		var endpointLabel string
+		if m.activeEndpointID == 0 {
+			endpointLabel = ErrorStyle.Render("⚠  No environment selected — go to Environments and select one first")
+		} else {
+			endpointLabel = KeyStyle.Render("Environment: ") + ValueStyle.Render(fmt.Sprintf("%s (id=%d)", m.activeEndpointName, m.activeEndpointID))
+		}
+
 		return lipgloss.JoinVertical(lipgloss.Left,
 			title,
 			"",
 			nameLabel,
+			endpointLabel,
 			"",
 			BoxStyle.Render(m.deployArea.View()),
 			"",

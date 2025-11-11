@@ -2,9 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,11 +15,12 @@ import (
 )
 
 // ErrorModalModel shows the full error text in a scrollable viewport
-// with clipboard copy support.
+// with clipboard copy support and temp-file fallback.
 type ErrorModalModel struct {
 	viewport   viewport.Model
 	rawText    string
 	copyStatus string // feedback after copy attempt
+	copyIsErr  bool   // true = status is a warning/error colour
 	width      int
 	height     int
 }
@@ -41,7 +45,6 @@ func (m *ErrorModalModel) rebuildViewport() {
 		h = 20
 	}
 
-	// Viewport occupies most of the screen; leave room for title + help bar
 	vpWidth := w - 4
 	vpHeight := h - 6
 	if vpHeight < 4 {
@@ -54,7 +57,6 @@ func (m *ErrorModalModel) rebuildViewport() {
 		BorderForeground(colorDanger).
 		Padding(0, 1)
 
-	// Word-wrap the raw text to fit the viewport
 	wrapped := wordWrap(m.rawText, vpWidth-4)
 	vp.SetContent(
 		ErrorStyle.Copy().Bold(false).Foreground(colorFg).Render(wrapped),
@@ -65,10 +67,15 @@ func (m *ErrorModalModel) rebuildViewport() {
 func (m ErrorModalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case CopyDoneMsg:
-		if msg.Success {
+		m.copyIsErr = !msg.Success
+		if msg.Success && msg.FilePath == "" {
 			m.copyStatus = "✓ Copied to clipboard!"
+		} else if msg.Success && msg.FilePath != "" {
+			// Temp-file fallback succeeded
+			m.copyStatus = "✓ Saved to: " + msg.FilePath
+			m.copyIsErr = false
 		} else {
-			m.copyStatus = "✗ Copy failed (no clipboard tool found)"
+			m.copyStatus = "✗ " + msg.ErrDetail
 		}
 		return m, nil
 
@@ -85,11 +92,6 @@ func (m ErrorModalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ErrorModalModel) View() string {
-	w := m.width
-	if w == 0 {
-		w = 80
-	}
-
 	title := lipgloss.NewStyle().
 		Foreground(colorDanger).
 		Bold(true).
@@ -100,8 +102,12 @@ func (m ErrorModalModel) View() string {
 
 	status := ""
 	if m.copyStatus != "" {
+		color := colorSuccess
+		if m.copyIsErr {
+			color = colorWarning
+		}
 		status = "\n" + lipgloss.NewStyle().
-			Foreground(colorSuccess).
+			Foreground(color).
 			Render("  "+m.copyStatus)
 	}
 
@@ -119,38 +125,73 @@ func (m *ErrorModalModel) SetSize(w, h int) {
 	m.rebuildViewport()
 }
 
-func (m ErrorModalModel) Init() tea.Cmd {
-	return nil
-}
-
 // ─── Clipboard ────────────────────────────────────────────────────────────────
 
-// copyToClipboard runs the platform clipboard command in the background
-// and returns a CopyDoneMsg.
+// CopyDoneMsg is returned after a copy attempt.
+type CopyDoneMsg struct {
+	Success   bool
+	FilePath  string // set when clipboard unavailable and we fell back to a file
+	ErrDetail string // human-readable reason on failure
+}
+
+// copyToClipboard tries platform clipboard tools in order, then falls back
+// to writing a temp file so the content is always accessible.
 func copyToClipboard(text string) tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
-		switch runtime.GOOS {
-		case "darwin":
-			cmd = exec.Command("pbcopy")
-		case "windows":
-			cmd = exec.Command("clip")
-		default: // Linux — try xclip, then xsel, then wl-clipboard
-			if path, err := exec.LookPath("xclip"); err == nil {
-				cmd = exec.Command(path, "-selection", "clipboard")
-			} else if path, err := exec.LookPath("xsel"); err == nil {
-				cmd = exec.Command(path, "--clipboard", "--input")
-			} else if path, err := exec.LookPath("wl-copy"); err == nil {
-				cmd = exec.Command(path)
-			} else {
-				return CopyDoneMsg{Success: false}
+		// ── 1. Try native clipboard ──────────────────────────────────────────
+		if tryClipboard(text) {
+			return CopyDoneMsg{Success: true}
+		}
+
+		// ── 2. Fallback: write to a temp file ────────────────────────────────
+		dir := os.TempDir()
+		fname := fmt.Sprintf("portainer-tui-error-%s.txt",
+			time.Now().Format("20060102-150405"))
+		path := filepath.Join(dir, fname)
+
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			return CopyDoneMsg{
+				Success:   false,
+				ErrDetail: fmt.Sprintf("clipboard unavailable and could not write temp file: %v", err),
 			}
 		}
 
-		cmd.Stdin = strings.NewReader(text)
-		if err := cmd.Run(); err != nil {
-			return CopyDoneMsg{Success: false}
-		}
-		return CopyDoneMsg{Success: true}
+		return CopyDoneMsg{Success: true, FilePath: path}
 	}
+}
+
+// tryClipboard attempts to pipe text into a clipboard command.
+// Returns true on success.
+func tryClipboard(text string) bool {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "windows":
+		cmd = exec.Command("clip")
+	default:
+		// Linux / BSD — try tools in preference order
+		tools := [][]string{
+			{"xclip", "-selection", "clipboard"},
+			{"xsel", "--clipboard", "--input"},
+			{"wl-copy"},
+		}
+		for _, args := range tools {
+			if path, err := exec.LookPath(args[0]); err == nil {
+				cmd = exec.Command(path, args[1:]...)
+				break
+			}
+		}
+		if cmd == nil {
+			return false
+		}
+	}
+
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run() == nil
+}
+
+func (m ErrorModalModel) Init() tea.Cmd {
+	return nil
 }

@@ -73,7 +73,43 @@ if [ -z "$JWT" ]; then
 fi
 ok "JWT token obtained (valid for 8 hours)."
 
-# ─── Create persistent API key via HTTPS ─────────────────────────────────────
+# ─── Register local Docker socket environment (if none exists) ───────────────
+log "Checking for registered environments ..."
+
+ENDPOINTS_RESPONSE=$(curl -s \
+  "${PORTAINER_HTTP}/api/endpoints" \
+  -H "Authorization: Bearer ${JWT}" || true)
+
+# Count endpoints — if response is "[]" or empty array, register local docker
+ENDPOINT_COUNT=$(echo "$ENDPOINTS_RESPONSE" | grep -o '"Id"' | wc -l | tr -d ' ' || echo "0")
+
+if [ "$ENDPOINT_COUNT" -eq 0 ]; then
+  log "No environments found. Registering local Docker socket ..."
+
+  ENDPOINT_RESPONSE=$(curl -s -X POST \
+    "${PORTAINER_HTTP}/api/endpoints" \
+    -H "Authorization: Bearer ${JWT}" \
+    -H "Content-Type: multipart/form-data" \
+    -F "Name=local" \
+    -F "EndpointCreationType=1" \
+    -F "URL=unix:///var/run/docker.sock" \
+    -F "TLS=false" || true)
+
+  ENDPOINT_ID=$(echo "$ENDPOINT_RESPONSE" | grep -o '"Id":[0-9]*' | head -1 | cut -d':' -f2 || true)
+
+  if [ -n "$ENDPOINT_ID" ] && [ "$ENDPOINT_ID" != "0" ]; then
+    ok "Local Docker environment registered (id=${ENDPOINT_ID}, name=local)"
+  else
+    REASON=$(echo "$ENDPOINT_RESPONSE" | grep -o '"message":"[^"]*"' | cut -d'"' -f4 || true)
+    warn "Could not auto-register environment: ${REASON:-unknown error}"
+    warn "Register manually at ${PORTAINER_HTTP} → Environments → Add environment"
+    warn "Raw response: ${ENDPOINT_RESPONSE}"
+  fi
+else
+  ok "Found ${ENDPOINT_COUNT} environment(s) already registered."
+fi
+
+
 # Portainer requires HTTPS for API key creation (security restriction).
 # We use -k (insecure) to accept the self-signed cert it ships with.
 log "Creating API access token '${TOKEN_NAME}' via HTTPS (${PORTAINER_HTTPS}) ..."

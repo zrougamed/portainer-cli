@@ -78,7 +78,6 @@ type ConfirmMsg struct {
 type ConfirmResultMsg struct{ Confirmed bool }
 type ErrMsg struct{ Err error }
 type StatusMsg struct{ Text string }
-type CopyDoneMsg struct{ Success bool }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -121,6 +120,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.containers.LoadContainers(a.activeEndpoint.ID)
 			}
 		case ScreenStacks:
+			if a.activeEndpoint != nil {
+				a.stacks.activeEndpointID = a.activeEndpoint.ID
+				a.stacks.activeEndpointName = a.activeEndpoint.Name
+			}
 			return a, a.stacks.Init()
 		case ScreenImages:
 			if a.activeEndpoint != nil {
@@ -135,6 +138,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case EndpointSelectedMsg:
 		ep := msg.Endpoint
 		a.activeEndpoint = &ep
+		a.stacks.activeEndpointID = ep.ID
+		a.stacks.activeEndpointName = ep.Name
 		a.screen = ScreenContainers
 		return a, a.containers.LoadContainers(ep.ID)
 
