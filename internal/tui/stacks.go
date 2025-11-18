@@ -26,7 +26,7 @@ type StacksModel struct {
 	subview            stacksSubview
 	deployArea         textarea.Model
 	deployName         string
-	activeEndpointID   int // set by App when an endpoint is selected
+	activeEndpointID   int
 	activeEndpointName string
 	width              int
 	height             int
@@ -89,11 +89,15 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadStacks()
 
 	case tea.KeyMsg:
+		// ── Deploy / compose editor subview ──────────────────────────────────
+		// Only esc and ctrl+s are intercepted; everything else goes to textarea.
 		if m.subview == stacksDeploy {
 			switch msg.String() {
 			case "esc":
 				m.subview = stacksList
+				m.deployArea.Blur()
 				return m, nil
+
 			case "ctrl+s":
 				content := m.deployArea.Value()
 				name := m.deployName
@@ -117,11 +121,15 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+
+			// All other keys → textarea (this is the key fix: no more
+			// early-return before updating the textarea for normal keys)
 			var cmd tea.Cmd
 			m.deployArea, cmd = m.deployArea.Update(msg)
 			return m, cmd
 		}
 
+		// ── List subview ─────────────────────────────────────────────────────
 		switch msg.String() {
 		case "r":
 			m.loading = true
@@ -131,7 +139,7 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.deployArea.Reset()
 			m.deployArea.Focus()
 			m.deployName = fmt.Sprintf("stack-%d", len(m.stacks)+1)
-			return m, nil
+			return m, textarea.Blink
 		case "s":
 			return m, m.stackAction("stop")
 		case "S":
@@ -214,7 +222,7 @@ func (m StacksModel) View() string {
 	title := HeaderStyle.Render("📚  Stacks")
 
 	if m.subview == stacksDeploy {
-		help := HelpStyle.Render("[ctrl+s] deploy  [esc] cancel")
+		help := HelpStyle.Render("[ctrl+s] deploy  [esc] cancel  (all other keys go to editor)")
 		nameLabel := KeyStyle.Render("Stack name: ") + ValueStyle.Render(m.deployName)
 
 		var endpointLabel string
@@ -240,7 +248,7 @@ func (m StacksModel) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, title, "  Loading stacks...")
 	}
 	status := SubtitleStyle.Render("  " + m.status)
-	help := HelpStyle.Render("  [n] new stack  [S] start  [s] stop  [d] delete  [r] refresh  [esc] back")
+	help := HelpStyle.Render("  [n] new stack  [S] start  [s] stop  [d] delete  [r] refresh  [m] menu  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		status,

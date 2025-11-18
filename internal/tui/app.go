@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zrougamed/portainer-cli/internal/api"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/zrougamed/portainer-cli/internal/api"
 )
 
 // Screen identifies which view is active
@@ -22,6 +23,7 @@ const (
 	ScreenLogs
 	ScreenConfirm
 	ScreenError
+	ScreenLogin
 )
 
 // App is the root BubbleTea model
@@ -43,6 +45,7 @@ type App struct {
 	logs       LogsModel
 	confirm    ConfirmModel
 	errModal   ErrorModalModel
+	login      LoginModel
 
 	// Active endpoint context
 	activeEndpoint *api.Endpoint
@@ -59,6 +62,7 @@ func NewApp(client *api.Client) App {
 		images:     NewImagesModel(client),
 		volumes:    NewVolumesModel(client),
 		logs:       NewLogsModel(client),
+		login:      NewLoginModel(client),
 	}
 }
 
@@ -78,11 +82,19 @@ type ConfirmMsg struct {
 type ConfirmResultMsg struct{ Confirmed bool }
 type ErrMsg struct{ Err error }
 type StatusMsg struct{ Text string }
+type LoginSuccessMsg struct{ Client *api.Client }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 func (a App) Init() tea.Cmd {
 	return a.dashboard.Init()
+}
+
+// isTextInputActive returns true when a text-editing subview is focused,
+// so that single-letter app shortcuts (e, x, r…) don't fire inside editors.
+func (a App) isTextInputActive() bool {
+	return a.screen == ScreenStacks && a.stacks.subview == stacksDeploy ||
+		a.screen == ScreenLogin
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -97,14 +109,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.propagateSize()
 
 	case ErrMsg:
-		a.err = msg.Err
-		// Update the modal with the new error so it's ready when opened
-		if msg.Err != nil {
-			a.errModal = NewErrorModalModel(msg.Err.Error(), a.width, a.height)
+		if msg.Err == nil {
+			break
 		}
+		// Auth errors → go to login screen immediately
+		if api.IsAuthError(msg.Err) {
+			a.prevScreen = a.screen
+			a.screen = ScreenLogin
+			a.login = NewLoginModel(a.client)
+			a.login.SetError(msg.Err.Error())
+			return a, nil
+		}
+		a.err = msg.Err
+		a.errModal = NewErrorModalModel(msg.Err.Error(), a.width, a.height)
+
+	case LoginSuccessMsg:
+		a.client = msg.Client
+		// Rebuild sub-models with the new authenticated client
+		a.dashboard = NewDashboardModel(a.client)
+		a.endpoints = NewEndpointsModel(a.client)
+		a.containers = NewContainersModel(a.client)
+		a.stacks = NewStacksModel(a.client)
+		a.images = NewImagesModel(a.client)
+		a.volumes = NewVolumesModel(a.client)
+		a.logs = NewLogsModel(a.client)
+		a.err = nil
+		a.screen = ScreenDashboard
+		return a, a.dashboard.Init()
 
 	case CopyDoneMsg:
-		// Bubble the result back into the error modal
 		m, cmd := a.errModal.Update(msg)
 		a.errModal = m.(ErrorModalModel)
 		cmds = append(cmds, cmd)
@@ -140,8 +173,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeEndpoint = &ep
 		a.stacks.activeEndpointID = ep.ID
 		a.stacks.activeEndpointName = ep.Name
-		a.screen = ScreenContainers
-		return a, a.containers.LoadContainers(ep.ID)
+		// Update dashboard so it shows the newly selected endpoint
+		a.dashboard.activeEndpoint = a.activeEndpoint
+		// Go to dashboard so the user can choose what to do with the endpoint
+		a.prevScreen = ScreenEndpoints
+		a.screen = ScreenDashboard
+		return a, nil
 
 	case ShowLogsMsg:
 		a.prevScreen = a.screen
@@ -161,39 +198,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			if a.screen == ScreenDashboard {
+		// ── App-level shortcuts: only fire when NOT inside a text editor ──
+		if !a.isTextInputActive() {
+			switch msg.String() {
+			case "ctrl+c":
 				return a, tea.Quit
-			}
-		case "esc":
-			if a.screen == ScreenError {
-				a.screen = a.prevScreen
-				return a, nil
-			}
-			if a.screen != ScreenDashboard {
-				a.screen = a.prevScreen
+			case "q":
 				if a.screen == ScreenDashboard {
+					return a, tea.Quit
+				}
+			case "esc":
+				if a.screen == ScreenError {
+					a.screen = a.prevScreen
+					return a, nil
+				}
+				if a.screen != ScreenDashboard {
+					a.screen = a.prevScreen
+					if a.screen == ScreenDashboard {
+						a.screen = ScreenDashboard
+					}
+				}
+				return a, nil
+			case "e":
+				if a.err != nil && a.screen != ScreenError {
+					a.prevScreen = a.screen
+					a.screen = ScreenError
+					a.errModal = NewErrorModalModel(a.err.Error(), a.width, a.height)
+					return a, nil
+				}
+			case "x":
+				if a.err != nil {
+					a.err = nil
+				}
+				if a.screen == ScreenError {
+					a.screen = a.prevScreen
+				}
+				return a, nil
+			// ── Global nav: go to dashboard from anywhere ──
+			case "m":
+				if a.screen != ScreenDashboard && a.screen != ScreenConfirm && a.screen != ScreenError {
+					a.prevScreen = a.screen
 					a.screen = ScreenDashboard
+					return a, nil
 				}
 			}
-		case "e":
-			// Open error detail modal if there's an active error
-			if a.err != nil && a.screen != ScreenError {
-				a.prevScreen = a.screen
-				a.screen = ScreenError
-				a.errModal = NewErrorModalModel(a.err.Error(), a.width, a.height)
-				return a, nil
-			}
-		case "x":
-			// Dismiss / clear the current error
-			if a.err != nil {
-				a.err = nil
-			}
-			if a.screen == ScreenError {
-				a.screen = a.prevScreen
-			}
-			return a, nil
 		}
 	}
 
@@ -243,6 +291,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.errModal.Update(msg)
 		a.errModal = m.(ErrorModalModel)
 		cmds = append(cmds, cmd)
+
+	case ScreenLogin:
+		m, cmd := a.login.Update(msg)
+		a.login = m.(LoginModel)
+		cmds = append(cmds, cmd)
 	}
 
 	return a, tea.Batch(cmds...)
@@ -251,6 +304,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ─── View ─────────────────────────────────────────────────────────────────────
 
 func (a App) View() string {
+	// Login screen is full-screen, no header/footer
+	if a.screen == ScreenLogin {
+		return a.login.View()
+	}
+
 	header := a.renderHeader()
 
 	// Error modal takes the full screen
@@ -301,25 +359,21 @@ func (a App) renderErrorBanner() string {
 	prefix := "⚠  "
 	hint := "  [e] details  [x] dismiss"
 
-	// Available width for the message text itself (inside the styled box padding)
-	msgWidth := width - lipgloss.Width(prefix) - 4 // 4 = border/padding
+	msgWidth := width - lipgloss.Width(prefix) - 4
 	if msgWidth < 20 {
 		msgWidth = 20
 	}
 
 	msg := a.err.Error()
-
-	// Word-wrap the message
 	wrapped := wordWrap(msg, msgWidth)
 	lines := strings.Split(wrapped, "\n")
 
-	// First line gets the prefix, rest are indented
 	var sb strings.Builder
 	for i, line := range lines {
 		if i == 0 {
 			sb.WriteString(prefix + line)
 		} else {
-			sb.WriteString("\n   " + line) // align with text after prefix
+			sb.WriteString("\n   " + line)
 		}
 	}
 
@@ -388,7 +442,7 @@ func (a App) renderHeader() string {
 }
 
 func (a App) renderFooter() string {
-	help := "[↑↓] navigate  [enter] select  [esc] back  [q] quit  [r] refresh"
+	help := "[↑↓] navigate  [enter] select  [esc] back  [m] menu  [q] quit  [r] refresh"
 	if a.err != nil {
 		help += "  [e] error detail  [x] dismiss error"
 	}
@@ -415,6 +469,8 @@ func (a App) screenName() string {
 		return "Confirm"
 	case ScreenError:
 		return "Error Detail"
+	case ScreenLogin:
+		return "Login"
 	}
 	return ""
 }
@@ -428,4 +484,5 @@ func (a *App) propagateSize() {
 	a.volumes.SetSize(a.width, inner)
 	a.logs.SetSize(a.width, inner)
 	a.errModal.SetSize(a.width, inner)
+	a.login.SetSize(a.width, a.height)
 }

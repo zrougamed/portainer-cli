@@ -20,7 +20,10 @@ type VolumesModel struct {
 	height     int
 }
 
-type volumesLoadedMsg struct{ volumes []api.Volume }
+type volumesLoadedMsg struct {
+	volumes    []api.Volume
+	endpointID int
+}
 
 func NewVolumesModel(client *api.Client) VolumesModel {
 	cols := []table.Column{
@@ -43,19 +46,19 @@ func NewVolumesModel(client *api.Client) VolumesModel {
 }
 
 func (m VolumesModel) LoadVolumes(endpointID int) tea.Cmd {
-	m.endpointID = endpointID
 	return func() tea.Msg {
 		volumes, err := m.client.ListVolumes(endpointID)
 		if err != nil {
 			return ErrMsg{err}
 		}
-		return volumesLoadedMsg{volumes}
+		return volumesLoadedMsg{volumes: volumes, endpointID: endpointID}
 	}
 }
 
 func (m VolumesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case volumesLoadedMsg:
+		m.endpointID = msg.endpointID
 		m.volumes = msg.volumes
 		m.table.SetRows(m.buildRows())
 		m.loading = false
@@ -94,7 +97,7 @@ func (m VolumesModel) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, title, "  Loading volumes...")
 	}
 	status := SubtitleStyle.Render("  " + m.status)
-	help := HelpStyle.Render("  [r] refresh  [esc] back")
+	help := HelpStyle.Render("  [r] refresh  [m] menu  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left, title, status, "", m.table.View(), "", help)
 }
 

@@ -20,7 +20,10 @@ type ImagesModel struct {
 	height     int
 }
 
-type imagesLoadedMsg struct{ images []api.Image }
+type imagesLoadedMsg struct {
+	images     []api.Image
+	endpointID int
+}
 
 func NewImagesModel(client *api.Client) ImagesModel {
 	cols := []table.Column{
@@ -47,19 +50,19 @@ func (m ImagesModel) Init() tea.Cmd {
 }
 
 func (m ImagesModel) LoadImages(endpointID int) tea.Cmd {
-	m.endpointID = endpointID
 	return func() tea.Msg {
 		images, err := m.client.ListImages(endpointID)
 		if err != nil {
 			return ErrMsg{err}
 		}
-		return imagesLoadedMsg{images}
+		return imagesLoadedMsg{images: images, endpointID: endpointID}
 	}
 }
 
 func (m ImagesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case imagesLoadedMsg:
+		m.endpointID = msg.endpointID
 		m.images = msg.images
 		m.table.SetRows(m.buildRows())
 		m.loading = false
@@ -107,7 +110,7 @@ func (m ImagesModel) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, title, "  Loading images...")
 	}
 	status := SubtitleStyle.Render("  " + m.status)
-	help := HelpStyle.Render("  [r] refresh  [esc] back")
+	help := HelpStyle.Render("  [r] refresh  [m] menu  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left, title, status, "", m.table.View(), "", help)
 }
 

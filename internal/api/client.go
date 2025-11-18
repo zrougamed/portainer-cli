@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,26 @@ const (
 	AuthModeJWT    AuthMode = iota // Authorization: Bearer <token>
 	AuthModeAPIKey                 // X-API-Key: <key>
 )
+
+// AuthError is returned when the server responds with 401 or 403.
+// The TUI can check for this type to redirect to a login screen.
+type AuthError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *AuthError) Error() string {
+	if e.StatusCode == 401 {
+		return fmt.Sprintf("authentication required (401): %s", e.Message)
+	}
+	return fmt.Sprintf("access denied (403): %s", e.Message)
+}
+
+// IsAuthError returns true if err is (or wraps) an *AuthError.
+func IsAuthError(err error) bool {
+	var ae *AuthError
+	return errors.As(err, &ae)
+}
 
 // Client is the Portainer API client
 type Client struct {
@@ -65,6 +86,10 @@ func (c *Client) Authenticate(username, password string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		b, _ := io.ReadAll(resp.Body)
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("authentication failed: status %d", resp.StatusCode)
 	}
@@ -112,11 +137,14 @@ func (c *Client) get(path string, out interface{}) error {
 		return err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.Unmarshal(b, out)
 }
 
 func (c *Client) post(path string, body interface{}, out interface{}) error {
@@ -125,12 +153,15 @@ func (c *Client) post(path string, body interface{}, out interface{}) error {
 		return err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		return json.Unmarshal(b, out)
 	}
 	return nil
 }
@@ -184,8 +215,11 @@ func (c *Client) ContainerAction(endpointID int, containerID, action string) err
 		return err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("action %s failed: %s", action, string(b))
 	}
 	return nil
@@ -253,8 +287,11 @@ func (c *Client) StackAction(stackID int, action string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("stack action failed: %s", string(b))
 	}
 	return nil
@@ -270,8 +307,11 @@ func (c *Client) DeleteStack(stackID, endpointID int) error {
 		return err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete stack failed: %s", string(b))
 	}
 	return nil

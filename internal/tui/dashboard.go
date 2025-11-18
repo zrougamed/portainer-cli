@@ -19,8 +19,9 @@ func (m menuItem) Description() string { return m.desc }
 func (m menuItem) FilterValue() string { return m.title }
 
 type DashboardModel struct {
-	client *api.Client
-	list   list.Model
+	client         *api.Client
+	list           list.Model
+	activeEndpoint *api.Endpoint
 }
 
 func NewDashboardModel(client *api.Client) DashboardModel {
@@ -78,9 +79,19 @@ func (d DashboardModel) View() string {
  |  _ \ ___  _ __| |_ __ _(_)_ __   ___ _ __
  | |_) / _ \| '__| __/ _' | | '_ \ / _ \ '__|
  |  __/ (_) | |  | || (_| | | | | |  __/ |
- |_|   \___/|_|   \__\__,_|_|_| |_|\___|_|  TUI
+ |_|   \___/|_|   \__\__,_|_|_| |_|\___|_|  TUI by zrougamed
 `)
-	subtitle := SubtitleStyle.Render(fmt.Sprintf("  Connected to: %s", "Portainer"))
+
+	var subtitle string
+	if d.activeEndpoint != nil {
+		subtitle = lipgloss.JoinHorizontal(lipgloss.Left,
+			SubtitleStyle.Render("  Active environment: "),
+			ActiveStyle.Render(fmt.Sprintf("%s (id=%d)", d.activeEndpoint.Name, d.activeEndpoint.ID)),
+		)
+	} else {
+		subtitle = SubtitleStyle.Render("  No environment selected — go to Environments to select one")
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left,
 		banner,
 		subtitle,

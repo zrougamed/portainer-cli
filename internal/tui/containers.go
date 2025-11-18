@@ -22,7 +22,10 @@ type ContainersModel struct {
 	height     int
 }
 
-type containersLoadedMsg struct{ containers []api.Container }
+type containersLoadedMsg struct {
+	containers []api.Container
+	endpointID int // carry the ID back so the model can persist it
+}
 type containerActionDoneMsg struct{ action, containerID string }
 
 func NewContainersModel(client *api.Client) ContainersModel {
@@ -46,14 +49,16 @@ func NewContainersModel(client *api.Client) ContainersModel {
 	return ContainersModel{client: client, table: t, showAll: true}
 }
 
+// LoadContainers returns a Cmd that fetches containers for the given endpointID.
+// The endpointID is embedded in the result message so the model can store it.
 func (m ContainersModel) LoadContainers(endpointID int) tea.Cmd {
-	m.endpointID = endpointID
+	showAll := m.showAll
 	return func() tea.Msg {
-		containers, err := m.client.ListContainers(endpointID, m.showAll)
+		containers, err := m.client.ListContainers(endpointID, showAll)
 		if err != nil {
 			return ErrMsg{err}
 		}
-		return containersLoadedMsg{containers}
+		return containersLoadedMsg{containers: containers, endpointID: endpointID}
 	}
 }
 
@@ -66,8 +71,9 @@ func (m ContainersModel) doAction(action string) tea.Cmd {
 		return nil
 	}
 	c := m.containers[idx]
+	endpointID := m.endpointID
 	return func() tea.Msg {
-		err := m.client.ContainerAction(m.endpointID, c.ID, action)
+		err := m.client.ContainerAction(endpointID, c.ID, action)
 		if err != nil {
 			return ErrMsg{err}
 		}
@@ -78,6 +84,8 @@ func (m ContainersModel) doAction(action string) tea.Cmd {
 func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case containersLoadedMsg:
+		// Persist the endpointID on the model so refresh can reuse it
+		m.endpointID = msg.endpointID
 		m.containers = msg.containers
 		m.table.SetRows(m.buildRows())
 		m.loading = false
@@ -193,7 +201,7 @@ func (m ContainersModel) View() string {
 		allFlag = " (all)"
 	}
 	status := SubtitleStyle.Render("  " + m.status + allFlag)
-	help := HelpStyle.Render("  [l/enter] logs  [S] start  [s] stop  [R] restart  [a] toggle all  [r] refresh  [esc] back")
+	help := HelpStyle.Render("  [l/enter] logs  [S] start  [s] stop  [R] restart  [a] toggle all  [r] refresh  [m] menu  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		status,
