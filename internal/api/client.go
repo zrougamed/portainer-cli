@@ -20,7 +20,6 @@ const (
 )
 
 // AuthError is returned when the server responds with 401 or 403.
-// The TUI can check for this type to redirect to a login screen.
 type AuthError struct {
 	StatusCode int
 	Message    string
@@ -119,12 +118,10 @@ func (c *Client) do(method, path string, body interface{}) (*http.Response, erro
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Portainer rejects requests that send BOTH headers simultaneously (403).
-	// Send only the header that matches the configured auth mode.
 	switch c.AuthMode {
 	case AuthModeAPIKey:
 		req.Header.Set("X-API-Key", c.Token)
-	default: // AuthModeJWT
+	default:
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
@@ -162,6 +159,22 @@ func (c *Client) post(path string, body interface{}, out interface{}) error {
 	}
 	if out != nil {
 		return json.Unmarshal(b, out)
+	}
+	return nil
+}
+
+func (c *Client) delete(path string) error {
+	resp, err := c.do("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return &AuthError{StatusCode: resp.StatusCode, Message: string(b)}
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
 }
@@ -238,6 +251,23 @@ func (c *Client) ContainerLogs(endpointID int, containerID string, tail int) (st
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
 	return string(b), err
+}
+
+// DeleteContainer removes a container. Force kills it if running; removeVolumes removes associated anon volumes.
+func (c *Client) DeleteContainer(endpointID int, containerID string, force, removeVolumes bool) error {
+	return c.delete(fmt.Sprintf(
+		"/api/endpoints/%d/docker/containers/%s?force=%v&v=%v",
+		endpointID, containerID, force, removeVolumes,
+	))
+}
+
+// RecreateContainer asks Portainer to recreate a container (pull + remove + run).
+func (c *Client) RecreateContainer(endpointID int, containerID string, pullImage bool) error {
+	body := map[string]interface{}{"PullImage": pullImage}
+	return c.post(
+		fmt.Sprintf("/api/endpoints/%d/docker/containers/%s/recreate", endpointID, containerID),
+		body, nil,
+	)
 }
 
 // ─── Stacks ───────────────────────────────────────────────────────────────────
@@ -354,6 +384,83 @@ func (c *Client) ListVolumes(endpointID int) ([]Volume, error) {
 	var result VolumesResponse
 	err := c.get(fmt.Sprintf("/api/endpoints/%d/docker/volumes", endpointID), &result)
 	return result.Volumes, err
+}
+
+// CreateVolumeRequest holds parameters for creating a new Docker volume.
+type CreateVolumeRequest struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	DriverOpts map[string]string `json:"DriverOpts,omitempty"`
+}
+
+func (c *Client) CreateVolume(endpointID int, req CreateVolumeRequest) error {
+	return c.post(
+		fmt.Sprintf("/api/endpoints/%d/docker/volumes/create", endpointID),
+		req, nil,
+	)
+}
+
+// DeleteVolume removes a named volume. Set force=true to remove even if in use (Docker may still reject).
+func (c *Client) DeleteVolume(endpointID int, volumeName string, force bool) error {
+	return c.delete(fmt.Sprintf(
+		"/api/endpoints/%d/docker/volumes/%s?force=%v",
+		endpointID, volumeName, force,
+	))
+}
+
+// ─── Networks ─────────────────────────────────────────────────────────────────
+
+type Network struct {
+	ID         string            `json:"Id"`
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Scope      string            `json:"Scope"`
+	Internal   bool              `json:"Internal"`
+	Attachable bool              `json:"Attachable"`
+	Labels     map[string]string `json:"Labels"`
+	IPAM       NetworkIPAM       `json:"IPAM"`
+}
+
+type NetworkIPAM struct {
+	Driver string            `json:"Driver"`
+	Config []NetworkIPAMConf `json:"Config"`
+}
+
+type NetworkIPAMConf struct {
+	Subnet  string `json:"Subnet,omitempty"`
+	Gateway string `json:"Gateway,omitempty"`
+}
+
+type CreateNetworkRequest struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Internal   bool              `json:"Internal"`
+	Attachable bool              `json:"Attachable"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	IPAM       *NetworkIPAM      `json:"IPAM,omitempty"`
+}
+
+func (c *Client) ListNetworks(endpointID int) ([]Network, error) {
+	var result []Network
+	return result, c.get(
+		fmt.Sprintf("/api/endpoints/%d/docker/networks", endpointID),
+		&result,
+	)
+}
+
+func (c *Client) CreateNetwork(endpointID int, req CreateNetworkRequest) error {
+	return c.post(
+		fmt.Sprintf("/api/endpoints/%d/docker/networks/create", endpointID),
+		req, nil,
+	)
+}
+
+func (c *Client) DeleteNetwork(endpointID int, networkID string) error {
+	return c.delete(fmt.Sprintf(
+		"/api/endpoints/%d/docker/networks/%s",
+		endpointID, networkID,
+	))
 }
 
 // ─── Open Portainer in browser ────────────────────────────────────────────────

@@ -30,7 +30,8 @@ func NewDashboardModel(client *api.Client) DashboardModel {
 		menuItem{"📦  Containers", "Manage containers on active endpoint", ScreenContainers},
 		menuItem{"📚  Stacks", "Deploy and manage compose stacks", ScreenStacks},
 		menuItem{"🖼   Images", "View Docker images", ScreenImages},
-		menuItem{"💾  Volumes", "View Docker volumes", ScreenVolumes},
+		menuItem{"💾  Volumes", "Create and delete Docker volumes", ScreenVolumes},
+		menuItem{"🔗  Networks", "Create and delete Docker networks", ScreenNetworks},
 	}
 
 	delegate := list.NewDefaultDelegate()

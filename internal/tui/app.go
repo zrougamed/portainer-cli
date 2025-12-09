@@ -20,6 +20,7 @@ const (
 	ScreenStacks
 	ScreenImages
 	ScreenVolumes
+	ScreenNetworks
 	ScreenLogs
 	ScreenConfirm
 	ScreenError
@@ -42,6 +43,7 @@ type App struct {
 	stacks     StacksModel
 	images     ImagesModel
 	volumes    VolumesModel
+	networks   NetworksModel
 	logs       LogsModel
 	confirm    ConfirmModel
 	errModal   ErrorModalModel
@@ -61,6 +63,7 @@ func NewApp(client *api.Client) App {
 		stacks:     NewStacksModel(client),
 		images:     NewImagesModel(client),
 		volumes:    NewVolumesModel(client),
+		networks:   NewNetworksModel(client),
 		logs:       NewLogsModel(client),
 		login:      NewLoginModel(client),
 	}
@@ -90,10 +93,11 @@ func (a App) Init() tea.Cmd {
 	return a.dashboard.Init()
 }
 
-// isTextInputActive returns true when a text-editing subview is focused,
-// so that single-letter app shortcuts (e, x, r…) don't fire inside editors.
+// isTextInputActive returns true when a text-editing subview is focused.
 func (a App) isTextInputActive() bool {
-	return a.screen == ScreenStacks && a.stacks.subview == stacksDeploy ||
+	return (a.screen == ScreenStacks && a.stacks.subview == stacksDeploy) ||
+		(a.screen == ScreenVolumes && a.volumes.subview == volumesCreate) ||
+		(a.screen == ScreenNetworks && a.networks.subview == networksCreate) ||
 		a.screen == ScreenLogin
 }
 
@@ -112,7 +116,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err == nil {
 			break
 		}
-		// Auth errors → go to login screen immediately
 		if api.IsAuthError(msg.Err) {
 			a.prevScreen = a.screen
 			a.screen = ScreenLogin
@@ -125,13 +128,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case LoginSuccessMsg:
 		a.client = msg.Client
-		// Rebuild sub-models with the new authenticated client
 		a.dashboard = NewDashboardModel(a.client)
 		a.endpoints = NewEndpointsModel(a.client)
 		a.containers = NewContainersModel(a.client)
 		a.stacks = NewStacksModel(a.client)
 		a.images = NewImagesModel(a.client)
 		a.volumes = NewVolumesModel(a.client)
+		a.networks = NewNetworksModel(a.client)
 		a.logs = NewLogsModel(a.client)
 		a.err = nil
 		a.screen = ScreenDashboard
@@ -166,6 +169,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.activeEndpoint != nil {
 				return a, a.volumes.LoadVolumes(a.activeEndpoint.ID)
 			}
+		case ScreenNetworks:
+			if a.activeEndpoint != nil {
+				return a, a.networks.LoadNetworks(a.activeEndpoint.ID)
+			}
 		}
 
 	case EndpointSelectedMsg:
@@ -173,9 +180,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeEndpoint = &ep
 		a.stacks.activeEndpointID = ep.ID
 		a.stacks.activeEndpointName = ep.Name
-		// Update dashboard so it shows the newly selected endpoint
 		a.dashboard.activeEndpoint = a.activeEndpoint
-		// Go to dashboard so the user can choose what to do with the endpoint
 		a.prevScreen = ScreenEndpoints
 		a.screen = ScreenDashboard
 		return a, nil
@@ -198,7 +203,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// ── App-level shortcuts: only fire when NOT inside a text editor ──
 		if !a.isTextInputActive() {
 			switch msg.String() {
 			case "ctrl+c":
@@ -214,9 +218,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if a.screen != ScreenDashboard {
 					a.screen = a.prevScreen
-					if a.screen == ScreenDashboard {
-						a.screen = ScreenDashboard
-					}
 				}
 				return a, nil
 			case "e":
@@ -234,7 +235,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.screen = a.prevScreen
 				}
 				return a, nil
-			// ── Global nav: go to dashboard from anywhere ──
 			case "m":
 				if a.screen != ScreenDashboard && a.screen != ScreenConfirm && a.screen != ScreenError {
 					a.prevScreen = a.screen
@@ -277,6 +277,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.volumes = m.(VolumesModel)
 		cmds = append(cmds, cmd)
 
+	case ScreenNetworks:
+		m, cmd := a.networks.Update(msg)
+		a.networks = m.(NetworksModel)
+		cmds = append(cmds, cmd)
+
 	case ScreenLogs:
 		m, cmd := a.logs.Update(msg)
 		a.logs = m.(LogsModel)
@@ -304,14 +309,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ─── View ─────────────────────────────────────────────────────────────────────
 
 func (a App) View() string {
-	// Login screen is full-screen, no header/footer
 	if a.screen == ScreenLogin {
 		return a.login.View()
 	}
 
 	header := a.renderHeader()
 
-	// Error modal takes the full screen
 	if a.screen == ScreenError {
 		footer := HelpStyle.Render("[c] copy  [x] dismiss  [esc] back")
 		return lipgloss.JoinVertical(lipgloss.Left, header, a.errModal.View(), footer)
@@ -331,6 +334,8 @@ func (a App) View() string {
 		body = a.images.View()
 	case ScreenVolumes:
 		body = a.volumes.View()
+	case ScreenNetworks:
+		body = a.networks.View()
 	case ScreenLogs:
 		body = a.logs.View()
 	case ScreenConfirm:
@@ -349,25 +354,20 @@ func (a App) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-// renderErrorBanner renders a wrapped, multi-line error banner with hint to expand.
 func (a App) renderErrorBanner() string {
 	width := a.width
 	if width == 0 {
 		width = 80
 	}
-
 	prefix := "⚠  "
 	hint := "  [e] details  [x] dismiss"
-
 	msgWidth := width - lipgloss.Width(prefix) - 4
 	if msgWidth < 20 {
 		msgWidth = 20
 	}
-
 	msg := a.err.Error()
 	wrapped := wordWrap(msg, msgWidth)
 	lines := strings.Split(wrapped, "\n")
-
 	var sb strings.Builder
 	for i, line := range lines {
 		if i == 0 {
@@ -376,18 +376,15 @@ func (a App) renderErrorBanner() string {
 			sb.WriteString("\n   " + line)
 		}
 	}
-
 	banner := lipgloss.NewStyle().
 		Foreground(colorDanger).
 		Bold(true).
 		Width(width).
 		Render(sb.String())
-
 	hintLine := HelpStyle.Render(hint)
 	return lipgloss.JoinVertical(lipgloss.Left, banner, hintLine)
 }
 
-// wordWrap wraps text at word boundaries to fit within maxWidth runes per line.
 func wordWrap(text string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return text
@@ -396,7 +393,6 @@ func wordWrap(text string, maxWidth int) string {
 	if len(words) == 0 {
 		return text
 	}
-
 	var lines []string
 	current := ""
 	for _, word := range words {
@@ -463,6 +459,8 @@ func (a App) screenName() string {
 		return "Images"
 	case ScreenVolumes:
 		return "Volumes"
+	case ScreenNetworks:
+		return "Networks"
 	case ScreenLogs:
 		return "Logs"
 	case ScreenConfirm:
@@ -476,12 +474,13 @@ func (a App) screenName() string {
 }
 
 func (a *App) propagateSize() {
-	inner := a.height - 4 // header + footer
+	inner := a.height - 4
 	a.containers.SetSize(a.width, inner)
 	a.stacks.SetSize(a.width, inner)
 	a.endpoints.SetSize(a.width, inner)
 	a.images.SetSize(a.width, inner)
 	a.volumes.SetSize(a.width, inner)
+	a.networks.SetSize(a.width, inner)
 	a.logs.SetSize(a.width, inner)
 	a.errModal.SetSize(a.width, inner)
 	a.login.SetSize(a.width, a.height)

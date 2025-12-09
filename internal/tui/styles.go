@@ -3,8 +3,7 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	// Colors
-	colorPrimary  = lipgloss.Color("#00BCD4") // Portainer cyan
+	colorPrimary  = lipgloss.Color("#00BCD4")
 	colorAccent   = lipgloss.Color("#26C6DA")
 	colorSuccess  = lipgloss.Color("#66BB6A")
 	colorWarning  = lipgloss.Color("#FFA726")
@@ -14,7 +13,6 @@ var (
 	colorBg       = lipgloss.Color("#263238")
 	colorSelected = lipgloss.Color("#004D61")
 
-	// Styles
 	TitleStyle = lipgloss.NewStyle().
 			Foreground(colorPrimary).
 			Bold(true).

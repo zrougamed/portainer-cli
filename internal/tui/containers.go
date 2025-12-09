@@ -24,7 +24,7 @@ type ContainersModel struct {
 
 type containersLoadedMsg struct {
 	containers []api.Container
-	endpointID int // carry the ID back so the model can persist it
+	endpointID int
 }
 type containerActionDoneMsg struct{ action, containerID string }
 
@@ -49,8 +49,6 @@ func NewContainersModel(client *api.Client) ContainersModel {
 	return ContainersModel{client: client, table: t, showAll: true}
 }
 
-// LoadContainers returns a Cmd that fetches containers for the given endpointID.
-// The endpointID is embedded in the result message so the model can store it.
 func (m ContainersModel) LoadContainers(endpointID int) tea.Cmd {
 	showAll := m.showAll
 	return func() tea.Msg {
@@ -62,15 +60,22 @@ func (m ContainersModel) LoadContainers(endpointID int) tea.Cmd {
 	}
 }
 
-func (m ContainersModel) doAction(action string) tea.Cmd {
+func (m ContainersModel) selectedContainer() (api.Container, bool) {
 	if len(m.containers) == 0 {
-		return nil
+		return api.Container{}, false
 	}
 	idx := m.table.Cursor()
 	if idx >= len(m.containers) {
+		return api.Container{}, false
+	}
+	return m.containers[idx], true
+}
+
+func (m ContainersModel) doAction(action string) tea.Cmd {
+	c, ok := m.selectedContainer()
+	if !ok {
 		return nil
 	}
-	c := m.containers[idx]
 	endpointID := m.endpointID
 	return func() tea.Msg {
 		err := m.client.ContainerAction(endpointID, c.ID, action)
@@ -81,10 +86,39 @@ func (m ContainersModel) doAction(action string) tea.Cmd {
 	}
 }
 
+func (m ContainersModel) doDelete(force bool) tea.Cmd {
+	c, ok := m.selectedContainer()
+	if !ok {
+		return nil
+	}
+	endpointID := m.endpointID
+	return func() tea.Msg {
+		err := m.client.DeleteContainer(endpointID, c.ID, force, false)
+		if err != nil {
+			return ErrMsg{err}
+		}
+		return containerActionDoneMsg{action: "delete", containerID: c.ID}
+	}
+}
+
+func (m ContainersModel) doRecreate() tea.Cmd {
+	c, ok := m.selectedContainer()
+	if !ok {
+		return nil
+	}
+	endpointID := m.endpointID
+	return func() tea.Msg {
+		err := m.client.RecreateContainer(endpointID, c.ID, true)
+		if err != nil {
+			return ErrMsg{err}
+		}
+		return containerActionDoneMsg{action: "recreate", containerID: c.ID}
+	}
+}
+
 func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case containersLoadedMsg:
-		// Persist the endpointID on the model so refresh can reuse it
 		m.endpointID = msg.endpointID
 		m.containers = msg.containers
 		m.table.SetRows(m.buildRows())
@@ -106,13 +140,14 @@ func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.loading = true
 			return m, m.LoadContainers(m.endpointID)
+
 		case "a":
 			m.showAll = !m.showAll
 			return m, m.LoadContainers(m.endpointID)
-		case "s":
-			idx := m.table.Cursor()
-			if idx < len(m.containers) {
-				c := m.containers[idx]
+
+		case "s": // stop
+			c, ok := m.selectedContainer()
+			if ok {
 				return m, func() tea.Msg {
 					return ConfirmMsg{
 						Prompt: fmt.Sprintf("Stop container %s?", containerName(c)),
@@ -120,10 +155,10 @@ func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "S":
-			idx := m.table.Cursor()
-			if idx < len(m.containers) {
-				c := m.containers[idx]
+
+		case "S": // start
+			c, ok := m.selectedContainer()
+			if ok {
 				return m, func() tea.Msg {
 					return ConfirmMsg{
 						Prompt: fmt.Sprintf("Start container %s?", containerName(c)),
@@ -131,10 +166,10 @@ func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "R":
-			idx := m.table.Cursor()
-			if idx < len(m.containers) {
-				c := m.containers[idx]
+
+		case "R": // restart
+			c, ok := m.selectedContainer()
+			if ok {
 				return m, func() tea.Msg {
 					return ConfirmMsg{
 						Prompt: fmt.Sprintf("Restart container %s?", containerName(c)),
@@ -142,10 +177,62 @@ func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "l", "enter":
-			idx := m.table.Cursor()
-			if idx < len(m.containers) {
-				c := m.containers[idx]
+
+		case "p": // pause / unpause toggle
+			c, ok := m.selectedContainer()
+			if ok {
+				if c.State == "paused" {
+					return m, func() tea.Msg {
+						return ConfirmMsg{
+							Prompt: fmt.Sprintf("Unpause container %s?", containerName(c)),
+							OnYes:  m.doAction("unpause"),
+						}
+					}
+				}
+				return m, func() tea.Msg {
+					return ConfirmMsg{
+						Prompt: fmt.Sprintf("Pause container %s?", containerName(c)),
+						OnYes:  m.doAction("pause"),
+					}
+				}
+			}
+
+		case "e": // recreate (pull + remove + run)
+			c, ok := m.selectedContainer()
+			if ok {
+				return m, func() tea.Msg {
+					return ConfirmMsg{
+						Prompt: fmt.Sprintf("Recreate container %s (pulls latest image)?", containerName(c)),
+						OnYes:  m.doRecreate(),
+					}
+				}
+			}
+
+		case "D": // delete (shift+d)
+			c, ok := m.selectedContainer()
+			if ok {
+				return m, func() tea.Msg {
+					return ConfirmMsg{
+						Prompt: fmt.Sprintf("DELETE container %s? This is irreversible!", containerName(c)),
+						OnYes:  m.doDelete(false),
+					}
+				}
+			}
+
+		case "ctrl+d": // force delete
+			c, ok := m.selectedContainer()
+			if ok {
+				return m, func() tea.Msg {
+					return ConfirmMsg{
+						Prompt: fmt.Sprintf("FORCE DELETE container %s (even if running)?", containerName(c)),
+						OnYes:  m.doDelete(true),
+					}
+				}
+			}
+
+		case "l", "enter": // logs
+			c, ok := m.selectedContainer()
+			if ok {
 				return m, func() tea.Msg {
 					return ShowLogsMsg{
 						EndpointID:  m.endpointID,
@@ -201,7 +288,10 @@ func (m ContainersModel) View() string {
 		allFlag = " (all)"
 	}
 	status := SubtitleStyle.Render("  " + m.status + allFlag)
-	help := HelpStyle.Render("  [l/enter] logs  [S] start  [s] stop  [R] restart  [a] toggle all  [r] refresh  [m] menu  [esc] back")
+	help := HelpStyle.Render(
+		"  [l/↵] logs  [S] start  [s] stop  [R] restart  [p] pause/unpause" +
+			"  [e] recreate  [D] delete  [ctrl+d] force-delete  [a] toggle-all  [r] refresh  [esc] back",
+	)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		status,
