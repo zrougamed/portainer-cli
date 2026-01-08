@@ -365,6 +365,100 @@ func (c *Client) ListImages(endpointID int) ([]Image, error) {
 	)
 }
 
+// DeleteImage removes a Docker image from the endpoint.
+func (c *Client) DeleteImage(endpointID int, imageID string, force bool) error {
+	// Strip sha256: prefix if present for the URL
+	id := imageID
+	if len(id) > 7 && id[:7] == "sha256:" {
+		id = id[7:]
+	}
+	return c.delete(fmt.Sprintf(
+		"/api/endpoints/%d/docker/images/%s?force=%v",
+		endpointID, id, force,
+	))
+}
+
+// PullImage triggers a docker pull on the endpoint for the given image reference.
+// The Portainer API proxies this to the Docker daemon's /images/create endpoint.
+func (c *Client) PullImage(endpointID int, image string) error {
+	resp, err := c.do(
+		"POST",
+		fmt.Sprintf("/api/endpoints/%d/docker/images/create?fromImage=%s", endpointID, image),
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("pull failed (%d): %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// PruneImagesReport holds the result of an image prune.
+type PruneImagesReport struct {
+	SpaceReclaimed int64 `json:"SpaceReclaimed"`
+}
+
+// PruneImages removes all dangling (unused, untagged) images.
+func (c *Client) PruneImages(endpointID int) (*PruneImagesReport, error) {
+	resp, err := c.do(
+		"POST",
+		fmt.Sprintf("/api/endpoints/%d/docker/images/prune?filters={\"dangling\":[\"true\"]}", endpointID),
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("prune failed (%d): %s", resp.StatusCode, string(b))
+	}
+	var report PruneImagesReport
+	_ = json.Unmarshal(b, &report)
+	return &report, nil
+}
+
+// PruneVolumesReport holds the result of a volume prune.
+type PruneVolumesReport struct {
+	SpaceReclaimed int64 `json:"SpaceReclaimed"`
+}
+
+// PruneVolumes removes all unused volumes.
+func (c *Client) PruneVolumes(endpointID int) (*PruneVolumesReport, error) {
+	resp, err := c.do(
+		"POST",
+		fmt.Sprintf("/api/endpoints/%d/docker/volumes/prune", endpointID),
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("prune failed (%d): %s", resp.StatusCode, string(b))
+	}
+	var report PruneVolumesReport
+	_ = json.Unmarshal(b, &report)
+	return &report, nil
+}
+
+// ListStackContainers returns all containers belonging to a stack (by its compose project label).
+func (c *Client) ListStackContainers(endpointID int, stackName string) ([]Container, error) {
+	var result []Container
+	return result, c.get(
+		fmt.Sprintf(
+			"/api/endpoints/%d/docker/containers/json?all=true&filters={\"label\":[\"com.docker.compose.project=%s\"]}",
+			endpointID, stackName,
+		),
+		&result,
+	)
+}
+
 // ─── Volumes ──────────────────────────────────────────────────────────────────
 
 type Volume struct {

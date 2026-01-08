@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Screen identifies which view is active
+// Screen identifies which view is active.
 type Screen int
 
 const (
@@ -25,9 +25,10 @@ const (
 	ScreenConfirm
 	ScreenError
 	ScreenLogin
+	ScreenEnvPicker // overlay: pick an environment before navigating
 )
 
-// App is the root BubbleTea model
+// App is the root BubbleTea model.
 type App struct {
 	client     *api.Client
 	width      int
@@ -48,6 +49,7 @@ type App struct {
 	confirm    ConfirmModel
 	errModal   ErrorModalModel
 	login      LoginModel
+	envPicker  EnvPickerModel
 
 	// Active endpoint context
 	activeEndpoint *api.Endpoint
@@ -93,11 +95,22 @@ func (a App) Init() tea.Cmd {
 	return a.dashboard.Init()
 }
 
-// isTextInputActive returns true when a text-editing subview is focused.
+// needsEndpoint returns true when the target screen requires an active endpoint.
+func needsEndpoint(s Screen) bool {
+	switch s {
+	case ScreenContainers, ScreenImages, ScreenVolumes, ScreenNetworks:
+		return true
+	}
+	return false
+}
+
+// isTextInputActive returns true when a text-editing subview is focused
+// (suppresses global key shortcuts so they reach the text input instead).
 func (a App) isTextInputActive() bool {
 	return (a.screen == ScreenStacks && a.stacks.subview == stacksDeploy) ||
 		(a.screen == ScreenVolumes && a.volumes.subview == volumesCreate) ||
 		(a.screen == ScreenNetworks && a.networks.subview == networksCreate) ||
+		(a.screen == ScreenImages && a.images.subview == imagesPullView) ||
 		a.screen == ScreenLogin
 }
 
@@ -107,11 +120,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
+	// ── Terminal resize ───────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
 		a.propagateSize()
 
+	// ── Errors ────────────────────────────────────────────────────────────────
 	case ErrMsg:
 		if msg.Err == nil {
 			break
@@ -126,6 +142,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.err = msg.Err
 		a.errModal = NewErrorModalModel(msg.Err.Error(), a.width, a.height)
 
+	// ── Login success ─────────────────────────────────────────────────────────
 	case LoginSuccessMsg:
 		a.client = msg.Client
 		a.dashboard = NewDashboardModel(a.client)
@@ -138,6 +155,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.logs = NewLogsModel(a.client)
 		a.err = nil
 		a.screen = ScreenDashboard
+		a.propagateSize()
 		return a, a.dashboard.Init()
 
 	case CopyDoneMsg:
@@ -145,7 +163,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.errModal = m.(ErrorModalModel)
 		cmds = append(cmds, cmd)
 
+	// ── Navigation ────────────────────────────────────────────────────────────
 	case NavigateMsg:
+		// If the target screen needs an endpoint and none is selected, show picker.
+		if needsEndpoint(msg.Screen) && a.activeEndpoint == nil {
+			a.prevScreen = a.screen
+			a.screen = ScreenEnvPicker
+			a.envPicker = NewEnvPickerModel(a.client, msg)
+			a.envPicker.SetSize(a.width, a.height-4)
+			return a, a.envPicker.Init()
+		}
+
 		a.prevScreen = a.screen
 		a.screen = msg.Screen
 		switch msg.Screen {
@@ -175,6 +203,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	// ── Env picker selected ───────────────────────────────────────────────────
+	case EnvPickerSelectedMsg:
+		ep := msg.Endpoint
+		a.activeEndpoint = &ep
+		a.stacks.activeEndpointID = ep.ID
+		a.stacks.activeEndpointName = ep.Name
+		a.dashboard.activeEndpoint = a.activeEndpoint
+		// Now replay the navigation that triggered the picker.
+		a.screen = a.prevScreen
+		return a.Update(msg.PendingNav)
+
+	// ── Endpoint selected from the Environments screen ────────────────────────
 	case EndpointSelectedMsg:
 		ep := msg.Endpoint
 		a.activeEndpoint = &ep
@@ -185,11 +225,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenDashboard
 		return a, nil
 
+	// ── Show logs ─────────────────────────────────────────────────────────────
 	case ShowLogsMsg:
 		a.prevScreen = a.screen
 		a.screen = ScreenLogs
+		// logs.Load is now a pointer receiver so state persists.
 		return a, a.logs.Load(msg.EndpointID, msg.ContainerID, msg.Name)
 
+	// ── Confirm dialog ────────────────────────────────────────────────────────
 	case ConfirmMsg:
 		a.prevScreen = a.screen
 		a.screen = ScreenConfirm
@@ -202,6 +245,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.confirm.onYes
 		}
 
+	// ── Global key handling ───────────────────────────────────────────────────
 	case tea.KeyMsg:
 		if !a.isTextInputActive() {
 			switch msg.String() {
@@ -236,7 +280,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return a, nil
 			case "m":
-				if a.screen != ScreenDashboard && a.screen != ScreenConfirm && a.screen != ScreenError {
+				if a.screen != ScreenDashboard {
 					a.prevScreen = a.screen
 					a.screen = ScreenDashboard
 					return a, nil
@@ -245,80 +289,68 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Delegate to active sub-model
+	// ── Route remaining messages to the active sub-model ──────────────────────
+	var cmd tea.Cmd
 	switch a.screen {
 	case ScreenDashboard:
-		m, cmd := a.dashboard.Update(msg)
+		var m tea.Model
+		m, cmd = a.dashboard.Update(msg)
 		a.dashboard = m.(DashboardModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenEndpoints:
-		m, cmd := a.endpoints.Update(msg)
+		var m tea.Model
+		m, cmd = a.endpoints.Update(msg)
 		a.endpoints = m.(EndpointsModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenContainers:
-		m, cmd := a.containers.Update(msg)
+		var m tea.Model
+		m, cmd = a.containers.Update(msg)
 		a.containers = m.(ContainersModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenStacks:
-		m, cmd := a.stacks.Update(msg)
+		var m tea.Model
+		m, cmd = a.stacks.Update(msg)
 		a.stacks = m.(StacksModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenImages:
-		m, cmd := a.images.Update(msg)
+		var m tea.Model
+		m, cmd = a.images.Update(msg)
 		a.images = m.(ImagesModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenVolumes:
-		m, cmd := a.volumes.Update(msg)
+		var m tea.Model
+		m, cmd = a.volumes.Update(msg)
 		a.volumes = m.(VolumesModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenNetworks:
-		m, cmd := a.networks.Update(msg)
+		var m tea.Model
+		m, cmd = a.networks.Update(msg)
 		a.networks = m.(NetworksModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenLogs:
-		m, cmd := a.logs.Update(msg)
+		var m tea.Model
+		m, cmd = a.logs.Update(msg)
 		a.logs = m.(LogsModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenConfirm:
-		m, cmd := a.confirm.Update(msg)
+		var m tea.Model
+		m, cmd = a.confirm.Update(msg)
 		a.confirm = m.(ConfirmModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenError:
-		m, cmd := a.errModal.Update(msg)
+		var m tea.Model
+		m, cmd = a.errModal.Update(msg)
 		a.errModal = m.(ErrorModalModel)
-		cmds = append(cmds, cmd)
-
 	case ScreenLogin:
-		m, cmd := a.login.Update(msg)
+		var m tea.Model
+		m, cmd = a.login.Update(msg)
 		a.login = m.(LoginModel)
-		cmds = append(cmds, cmd)
+	case ScreenEnvPicker:
+		var m tea.Model
+		m, cmd = a.envPicker.Update(msg)
+		a.envPicker = m.(EnvPickerModel)
 	}
 
+	cmds = append(cmds, cmd)
 	return a, tea.Batch(cmds...)
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
 
 func (a App) View() string {
-	if a.screen == ScreenLogin {
-		return a.login.View()
-	}
-
 	header := a.renderHeader()
-
-	if a.screen == ScreenError {
-		footer := HelpStyle.Render("[c] copy  [x] dismiss  [esc] back")
-		return lipgloss.JoinVertical(lipgloss.Left, header, a.errModal.View(), footer)
-	}
+	footer := a.renderFooter()
 
 	var body string
 	switch a.screen {
@@ -340,91 +372,49 @@ func (a App) View() string {
 		body = a.logs.View()
 	case ScreenConfirm:
 		body = a.confirm.View()
+	case ScreenError:
+		body = a.errModal.View()
+	case ScreenLogin:
+		body = a.login.View()
+	case ScreenEnvPicker:
+		body = a.envPicker.View()
 	default:
 		body = "Unknown screen"
 	}
 
-	footer := a.renderFooter()
-
-	if a.err != nil {
-		errBanner := a.renderErrorBanner()
-		body = lipgloss.JoinVertical(lipgloss.Left, errBanner, body)
+	// Show inline error banner when not in error detail screen
+	if a.err != nil && a.screen != ScreenError {
+		errBanner := a.renderErrBanner()
+		body = errBanner + "\n" + body
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-func (a App) renderErrorBanner() string {
-	width := a.width
-	if width == 0 {
-		width = 80
-	}
-	prefix := "⚠  "
-	hint := "  [e] details  [x] dismiss"
-	msgWidth := width - lipgloss.Width(prefix) - 4
-	if msgWidth < 20 {
-		msgWidth = 20
-	}
-	msg := a.err.Error()
-	wrapped := wordWrap(msg, msgWidth)
-	lines := strings.Split(wrapped, "\n")
-	var sb strings.Builder
-	for i, line := range lines {
-		if i == 0 {
-			sb.WriteString(prefix + line)
-		} else {
-			sb.WriteString("\n   " + line)
-		}
-	}
-	banner := lipgloss.NewStyle().
-		Foreground(colorDanger).
-		Bold(true).
-		Width(width).
-		Render(sb.String())
-	hintLine := HelpStyle.Render(hint)
-	return lipgloss.JoinVertical(lipgloss.Left, banner, hintLine)
-}
-
-func wordWrap(text string, maxWidth int) string {
-	if maxWidth <= 0 {
-		return text
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return text
-	}
-	var lines []string
-	current := ""
-	for _, word := range words {
-		if current == "" {
-			current = word
-		} else if len(current)+1+len(word) <= maxWidth {
-			current += " " + word
-		} else {
-			lines = append(lines, current)
-			current = word
-		}
-	}
-	if current != "" {
-		lines = append(lines, current)
-	}
-	return strings.Join(lines, "\n")
-}
-
 func (a App) renderHeader() string {
-	title := TitleStyle.Render("⚓ Portainer TUI")
-	var ctx string
+	title := lipgloss.NewStyle().
+		Foreground(colorPrimary).
+		Bold(true).
+		Render("⚓ Portainer TUI")
+
+	ctx := ""
 	if a.activeEndpoint != nil {
-		ctx = SubtitleStyle.Render(fmt.Sprintf(" › %s", a.activeEndpoint.Name))
+		ctx = "  " + ActiveStyle.Render("●") + "  " + SubtitleStyle.Render(a.activeEndpoint.Name)
+	} else {
+		ctx = "  " + InactiveStyle.Render("○") + "  " + SubtitleStyle.Render("no environment")
 	}
-	nav := a.screenName()
-	right := SubtitleStyle.Render(nav)
+
+	right := ""
+	if a.width > 0 {
+		right = SubtitleStyle.Render(a.screenName())
+	}
 
 	width := a.width
 	if width == 0 {
 		width = 80
 	}
-	gap := width - lipgloss.Width(title+ctx) - lipgloss.Width(right)
+
+	gap := width - lipgloss.Width(title) - lipgloss.Width(ctx) - lipgloss.Width(right) - 2
 	if gap < 0 {
 		gap = 0
 	}
@@ -435,6 +425,15 @@ func (a App) renderHeader() string {
 		BorderForeground(colorMuted).
 		Width(width).
 		Render(title + ctx + fmt.Sprintf("%*s", gap, "") + right)
+}
+
+func (a App) renderErrBanner() string {
+	msg := a.err.Error()
+	if len(msg) > 120 {
+		msg = msg[:117] + "..."
+	}
+	return ErrorStyle.Render("△ "+msg) + "\n" +
+		HelpStyle.Render("  [e] details  [x] dismiss")
 }
 
 func (a App) renderFooter() string {
@@ -469,12 +468,17 @@ func (a App) screenName() string {
 		return "Error Detail"
 	case ScreenLogin:
 		return "Login"
+	case ScreenEnvPicker:
+		return "Select Environment"
 	}
 	return ""
 }
 
 func (a *App) propagateSize() {
-	inner := a.height - 4
+	inner := a.height - 4 // subtract header + footer rows
+	if inner < 4 {
+		inner = 4
+	}
 	a.containers.SetSize(a.width, inner)
 	a.stacks.SetSize(a.width, inner)
 	a.endpoints.SetSize(a.width, inner)
@@ -484,4 +488,32 @@ func (a *App) propagateSize() {
 	a.logs.SetSize(a.width, inner)
 	a.errModal.SetSize(a.width, inner)
 	a.login.SetSize(a.width, a.height)
+	a.envPicker.SetSize(a.width, inner)
+	// Resize dashboard list to fill the terminal
+	a.dashboard.list.SetSize(a.width-4, inner-6)
+}
+
+// wordWrap is a simple word-wrap helper used by ErrorModalModel.
+func wordWrap(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var sb strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if len(line) <= width {
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+			continue
+		}
+		for len(line) > width {
+			sb.WriteString(line[:width])
+			sb.WriteByte('\n')
+			line = line[width:]
+		}
+		if len(line) > 0 {
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
 }

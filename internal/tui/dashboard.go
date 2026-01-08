@@ -29,7 +29,7 @@ func NewDashboardModel(client *api.Client) DashboardModel {
 		menuItem{"🌐  Environments", "Browse and select Portainer endpoints", ScreenEndpoints},
 		menuItem{"📦  Containers", "Manage containers on active endpoint", ScreenContainers},
 		menuItem{"📚  Stacks", "Deploy and manage compose stacks", ScreenStacks},
-		menuItem{"🖼   Images", "View Docker images", ScreenImages},
+		menuItem{"🖼   Images", "View, pull, delete Docker images", ScreenImages},
 		menuItem{"💾  Volumes", "Create and delete Docker volumes", ScreenVolumes},
 		menuItem{"🔗  Networks", "Create and delete Docker networks", ScreenNetworks},
 	}

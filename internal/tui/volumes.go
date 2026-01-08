@@ -152,7 +152,7 @@ func (m VolumesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.LoadVolumes(m.endpointID)
 
-		case "n": // new volume
+		case "n":
 			m.subview = volumesCreate
 			m.createFocus = volFieldName
 			for i := range m.createInputs {
@@ -162,7 +162,7 @@ func (m VolumesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refocusCreate()
 			return m, textinput.Blink
 
-		case "d", "D": // delete (D = force)
+		case "d", "D":
 			if len(m.volumes) == 0 {
 				return m, nil
 			}
@@ -185,6 +185,25 @@ func (m VolumesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return ErrMsg{err}
 						}
 						return volumeActionDoneMsg{"✓ Deleted volume: " + vol.Name}
+					},
+				}
+			}
+
+		case "P": // prune unused volumes
+			endpointID := m.endpointID
+			return m, func() tea.Msg {
+				return ConfirmMsg{
+					Prompt: "Remove ALL unused volumes? Data will be permanently lost!",
+					OnYes: func() tea.Msg {
+						report, err := m.client.PruneVolumes(endpointID)
+						if err != nil {
+							return ErrMsg{err}
+						}
+						freed := ""
+						if report != nil {
+							freed = fmt.Sprintf(" (freed %s)", formatBytes(report.SpaceReclaimed))
+						}
+						return volumeActionDoneMsg{"✓ Pruned unused volumes" + freed}
 					},
 				}
 			}
@@ -249,7 +268,7 @@ func (m VolumesModel) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, title, "  Loading volumes...")
 	}
 	status := SubtitleStyle.Render("  " + m.status)
-	help := HelpStyle.Render("  [n] new volume  [d] delete  [D] force-delete  [r] refresh  [esc] back")
+	help := HelpStyle.Render("  [n] new  [d] delete  [D] force-delete  [P] prune unused  [r] refresh  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left, title, status, "", m.table.View(), "", help)
 }
 
@@ -284,6 +303,17 @@ func (m *VolumesModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.table.SetHeight(h - 8)
+	// Expand mountpoint column to fill available width
+	mountWidth := w - 30 - 12 - 10 - 10
+	if mountWidth < 20 {
+		mountWidth = 20
+	}
+	m.table.SetColumns([]table.Column{
+		{Title: "Name", Width: 30},
+		{Title: "Driver", Width: 12},
+		{Title: "Scope", Width: 10},
+		{Title: "Mountpoint", Width: mountWidth},
+	})
 	for i := range m.createInputs {
 		m.createInputs[i].Width = w - 10
 		if m.createInputs[i].Width < 20 {

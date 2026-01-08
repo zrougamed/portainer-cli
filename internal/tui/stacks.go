@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -10,11 +11,22 @@ import (
 	"github.com/zrougamed/portainer-cli/internal/api"
 )
 
+// capitalize upper-cases the first letter of s.
+func capitalize(s string) string {
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
 type stacksSubview int
 
 const (
-	stacksList stacksSubview = iota
-	stacksDeploy
+	stacksList       stacksSubview = iota
+	stacksDeploy                   // compose editor
+	stacksContainers               // containers belonging to a stack
 )
 
 type StacksModel struct {
@@ -30,10 +42,20 @@ type StacksModel struct {
 	activeEndpointName string
 	width              int
 	height             int
+
+	// stack containers subview
+	stackContainersTable  table.Model
+	stackContainers       []api.Container
+	stackContainerName    string // which stack we're looking at
+	stackContainerLoading bool
 }
 
 type stacksLoadedMsg struct{ stacks []api.Stack }
 type stackActionDoneMsg struct{ msg string }
+type stackContainersLoadedMsg struct {
+	containers []api.Container
+	stackName  string
+}
 
 func NewStacksModel(client *api.Client) StacksModel {
 	cols := []table.Column{
@@ -53,12 +75,32 @@ func NewStacksModel(client *api.Client) StacksModel {
 	s.Selected = SelectedRowStyle
 	t.SetStyles(s)
 
+	// Containers sub-table
+	cCols := []table.Column{
+		{Title: "ID", Width: 14},
+		{Title: "Name", Width: 28},
+		{Title: "Image", Width: 30},
+		{Title: "State", Width: 10},
+		{Title: "Status", Width: 22},
+	}
+	ct := table.New(
+		table.WithColumns(cCols),
+		table.WithFocused(true),
+		table.WithHeight(15),
+	)
+	ct.SetStyles(s)
+
 	ta := textarea.New()
 	ta.Placeholder = "Paste your docker-compose.yml here..."
 	ta.SetWidth(80)
 	ta.SetHeight(20)
 
-	return StacksModel{client: client, table: t, deployArea: ta}
+	return StacksModel{
+		client:               client,
+		table:                t,
+		stackContainersTable: ct,
+		deployArea:           ta,
+	}
 }
 
 func (m StacksModel) Init() tea.Cmd {
@@ -75,6 +117,18 @@ func (m StacksModel) loadStacks() tea.Cmd {
 	}
 }
 
+func (m StacksModel) loadStackContainers(stackName string) tea.Cmd {
+	endpointID := m.activeEndpointID
+	client := m.client
+	return func() tea.Msg {
+		containers, err := client.ListStackContainers(endpointID, stackName)
+		if err != nil {
+			return ErrMsg{err}
+		}
+		return stackContainersLoadedMsg{containers: containers, stackName: stackName}
+	}
+}
+
 func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stacksLoadedMsg:
@@ -88,9 +142,40 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.subview = stacksList
 		return m, m.loadStacks()
 
+	case stackContainersLoadedMsg:
+		m.stackContainerLoading = false
+		m.stackContainers = msg.containers
+		m.stackContainerName = msg.stackName
+		rows := make([]table.Row, len(msg.containers))
+		for i, c := range msg.containers {
+			shortID := c.ID
+			if len(shortID) > 12 {
+				shortID = shortID[:12]
+			}
+			name := containerName(c)
+			image := c.Image
+			if len(image) > 28 {
+				image = image[:25] + "..."
+			}
+			state := StateStyle(c.State).Render(c.State)
+			rows[i] = table.Row{shortID, name, image, state, c.Status}
+		}
+		m.stackContainersTable.SetRows(rows)
+
 	case tea.KeyMsg:
-		// ── Deploy / compose editor subview ──────────────────────────────────
-		// Only esc and ctrl+s are intercepted; everything else goes to textarea.
+		// ── Stack containers subview ──────────────────────────────────────────
+		if m.subview == stacksContainers {
+			switch msg.String() {
+			case "esc", "q":
+				m.subview = stacksList
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.stackContainersTable, cmd = m.stackContainersTable.Update(msg)
+			return m, cmd
+		}
+
+		// ── Deploy / compose editor subview ───────────────────────────────────
 		if m.subview == stacksDeploy {
 			switch msg.String() {
 			case "esc":
@@ -121,31 +206,51 @@ func (m StacksModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-
-			// All other keys → textarea (this is the key fix: no more
-			// early-return before updating the textarea for normal keys)
 			var cmd tea.Cmd
 			m.deployArea, cmd = m.deployArea.Update(msg)
 			return m, cmd
 		}
 
-		// ── List subview ─────────────────────────────────────────────────────
+		// ── List subview ──────────────────────────────────────────────────────
 		switch msg.String() {
 		case "r":
 			m.loading = true
 			return m, m.loadStacks()
+
 		case "n":
 			m.subview = stacksDeploy
 			m.deployArea.Reset()
 			m.deployArea.Focus()
 			m.deployName = fmt.Sprintf("stack-%d", len(m.stacks)+1)
 			return m, textarea.Blink
+
 		case "s":
 			return m, m.stackAction("stop")
+
 		case "S":
 			return m, m.stackAction("start")
+
 		case "d":
 			return m, m.stackActionDelete()
+
+		case "c": // view stack containers
+			if len(m.stacks) == 0 {
+				return m, nil
+			}
+			idx := m.table.Cursor()
+			if idx >= len(m.stacks) {
+				return m, nil
+			}
+			stack := m.stacks[idx]
+			if m.activeEndpointID == 0 {
+				return m, func() tea.Msg {
+					return ErrMsg{fmt.Errorf("no environment selected — select an environment first")}
+				}
+			}
+			m.subview = stacksContainers
+			m.stackContainerLoading = true
+			m.stackContainerName = stack.Name
+			return m, m.loadStackContainers(stack.Name)
 		}
 	}
 
@@ -164,7 +269,7 @@ func (m StacksModel) stackAction(action string) tea.Cmd {
 	stack := m.stacks[idx]
 	return func() tea.Msg {
 		return ConfirmMsg{
-			Prompt: fmt.Sprintf("%s stack '%s'?", action, stack.Name),
+			Prompt: fmt.Sprintf("%s stack '%s'?", capitalize(action), stack.Name),
 			OnYes: func() tea.Msg {
 				err := m.client.StackAction(stack.ID, action)
 				if err != nil {
@@ -221,6 +326,26 @@ func (m StacksModel) buildRows() []table.Row {
 func (m StacksModel) View() string {
 	title := HeaderStyle.Render("📚  Stacks")
 
+	// ── Stack containers subview ──────────────────────────────────────────────
+	if m.subview == stacksContainers {
+		subTitle := HeaderStyle.Render(fmt.Sprintf("📦  Containers for stack: %s", m.stackContainerName))
+		if m.stackContainerLoading {
+			return lipgloss.JoinVertical(lipgloss.Left, title, subTitle, "  Loading containers...")
+		}
+		countLabel := SubtitleStyle.Render(fmt.Sprintf("  %d container(s)", len(m.stackContainers)))
+		help := HelpStyle.Render("  [↑↓] navigate  [esc] back to stacks")
+		return lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			subTitle,
+			countLabel,
+			"",
+			m.stackContainersTable.View(),
+			"",
+			help,
+		)
+	}
+
+	// ── Deploy subview ────────────────────────────────────────────────────────
 	if m.subview == stacksDeploy {
 		help := HelpStyle.Render("[ctrl+s] deploy  [esc] cancel  (all other keys go to editor)")
 		nameLabel := KeyStyle.Render("Stack name: ") + ValueStyle.Render(m.deployName)
@@ -244,11 +369,12 @@ func (m StacksModel) View() string {
 		)
 	}
 
+	// ── List subview ──────────────────────────────────────────────────────────
 	if m.loading {
 		return lipgloss.JoinVertical(lipgloss.Left, title, "  Loading stacks...")
 	}
 	status := SubtitleStyle.Render("  " + m.status)
-	help := HelpStyle.Render("  [n] new stack  [S] start  [s] stop  [d] delete  [r] refresh  [m] menu  [esc] back")
+	help := HelpStyle.Render("  [n] new  [S] start  [s] stop  [d] delete  [c] containers  [r] refresh  [esc] back")
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		status,
@@ -263,6 +389,33 @@ func (m *StacksModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.table.SetHeight(h - 8)
+	m.stackContainersTable.SetHeight(h - 10)
 	m.deployArea.SetWidth(w - 4)
 	m.deployArea.SetHeight(h - 12)
+
+	// Expand name column to fill stacks table
+	nameWidth := w - 6 - 10 - 10 - 12 - 10
+	if nameWidth < 15 {
+		nameWidth = 15
+	}
+	m.table.SetColumns([]table.Column{
+		{Title: "ID", Width: 6},
+		{Title: "Name", Width: nameWidth},
+		{Title: "Type", Width: 10},
+		{Title: "Status", Width: 10},
+		{Title: "Endpoint", Width: 12},
+	})
+
+	// Expand container name column
+	cNameWidth := w - 14 - 30 - 10 - 22 - 10
+	if cNameWidth < 15 {
+		cNameWidth = 15
+	}
+	m.stackContainersTable.SetColumns([]table.Column{
+		{Title: "ID", Width: 14},
+		{Title: "Name", Width: cNameWidth},
+		{Title: "Image", Width: 30},
+		{Title: "State", Width: 10},
+		{Title: "Status", Width: 22},
+	})
 }
