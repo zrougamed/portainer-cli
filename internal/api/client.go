@@ -307,10 +307,10 @@ func (c *Client) DeployStack(endpointID int, name, composeContent string, env ma
 	)
 }
 
-func (c *Client) StackAction(stackID int, action string) error {
+func (c *Client) StackAction(stackID int, action string, endpointID int) error {
 	resp, err := c.do(
 		"POST",
-		fmt.Sprintf("/api/stacks/%d/%s", stackID, action),
+		fmt.Sprintf("/api/stacks/%d/%s?endpointId=%d", stackID, action, endpointID),
 		nil,
 	)
 	if err != nil {

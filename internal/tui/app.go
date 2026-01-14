@@ -283,7 +283,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.screen != ScreenDashboard {
 					a.prevScreen = a.screen
 					a.screen = ScreenDashboard
-					return a, nil
+					return a, a.dashboard.Init()
 				}
 			}
 		}

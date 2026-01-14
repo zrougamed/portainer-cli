@@ -271,7 +271,7 @@ func (m StacksModel) stackAction(action string) tea.Cmd {
 		return ConfirmMsg{
 			Prompt: fmt.Sprintf("%s stack '%s'?", capitalize(action), stack.Name),
 			OnYes: func() tea.Msg {
-				err := m.client.StackAction(stack.ID, action)
+				err := m.client.StackAction(stack.ID, action, stack.EndpointID)
 				if err != nil {
 					return ErrMsg{err}
 				}
