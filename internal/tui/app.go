@@ -163,46 +163,44 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.errModal = m.(ErrorModalModel)
 		cmds = append(cmds, cmd)
 
-	// ── Navigation ────────────────────────────────────────────────────────────
+		// ── Navigation ────────────────────────────────────────────────────────────
 	case NavigateMsg:
-		// If the target screen needs an endpoint and none is selected, show picker.
 		if needsEndpoint(msg.Screen) && a.activeEndpoint == nil {
 			a.prevScreen = a.screen
 			a.screen = ScreenEnvPicker
 			a.envPicker = NewEnvPickerModel(a.client, msg)
 			a.envPicker.SetSize(a.width, a.height-4)
-			return a, a.envPicker.Init()
+			return a, tea.Batch(tea.ClearScreen, a.envPicker.Init())
 		}
 
 		a.prevScreen = a.screen
 		a.screen = msg.Screen
 		switch msg.Screen {
 		case ScreenEndpoints:
-			return a, a.endpoints.Init()
+			return a, tea.Batch(tea.ClearScreen, a.endpoints.Init())
 		case ScreenContainers:
 			if a.activeEndpoint != nil {
-				return a, a.containers.LoadContainers(a.activeEndpoint.ID)
+				return a, tea.Batch(tea.ClearScreen, a.containers.LoadContainers(a.activeEndpoint.ID))
 			}
 		case ScreenStacks:
 			if a.activeEndpoint != nil {
 				a.stacks.activeEndpointID = a.activeEndpoint.ID
 				a.stacks.activeEndpointName = a.activeEndpoint.Name
 			}
-			return a, a.stacks.Init()
+			return a, tea.Batch(tea.ClearScreen, a.stacks.Init())
 		case ScreenImages:
 			if a.activeEndpoint != nil {
-				return a, a.images.LoadImages(a.activeEndpoint.ID)
+				return a, tea.Batch(tea.ClearScreen, a.images.LoadImages(a.activeEndpoint.ID))
 			}
 		case ScreenVolumes:
 			if a.activeEndpoint != nil {
-				return a, a.volumes.LoadVolumes(a.activeEndpoint.ID)
+				return a, tea.Batch(tea.ClearScreen, a.volumes.LoadVolumes(a.activeEndpoint.ID))
 			}
 		case ScreenNetworks:
 			if a.activeEndpoint != nil {
-				return a, a.networks.LoadNetworks(a.activeEndpoint.ID)
+				return a, tea.Batch(tea.ClearScreen, a.networks.LoadNetworks(a.activeEndpoint.ID))
 			}
 		}
-
 	// ── Env picker selected ───────────────────────────────────────────────────
 	case EnvPickerSelectedMsg:
 		ep := msg.Endpoint
