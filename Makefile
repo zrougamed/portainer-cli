@@ -1,7 +1,7 @@
 BINARY=portainer-tui
 MAIN=./cmd
 
-.PHONY: build run install tidy clean
+.PHONY: build run install tidy clean test
 
 build:
 	go build -o $(BINARY) $(MAIN)
@@ -17,6 +17,9 @@ tidy:
 
 clean:
 	rm -f $(BINARY)
+
+test:
+	go test ./... -v -count=1
 
 # Quick login helper
 login:

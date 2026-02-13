@@ -497,20 +497,28 @@ func wordWrap(s string, width int) string {
 		return s
 	}
 	var sb strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		if len(line) <= width {
-			sb.WriteString(line)
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
 			sb.WriteByte('\n')
+		}
+		words := strings.Fields(line)
+		if len(words) == 0 {
 			continue
 		}
-		for len(line) > width {
-			sb.WriteString(line[:width])
-			sb.WriteByte('\n')
-			line = line[width:]
-		}
-		if len(line) > 0 {
-			sb.WriteString(line)
-			sb.WriteByte('\n')
+		col := 0
+		for j, w := range words {
+			if j == 0 {
+				sb.WriteString(w)
+				col = len(w)
+			} else if col+1+len(w) <= width {
+				sb.WriteByte(' ')
+				sb.WriteString(w)
+				col += 1 + len(w)
+			} else {
+				sb.WriteByte('\n')
+				sb.WriteString(w)
+				col = len(w)
+			}
 		}
 	}
 	return sb.String()

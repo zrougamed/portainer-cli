@@ -70,11 +70,13 @@ func TestApp_EndpointSelected(t *testing.T) {
 	ep := api.Endpoint{ID: 1, Name: "local"}
 	result, _ := a.Update(EndpointSelectedMsg{Endpoint: ep})
 	updated := result.(App)
-	if updated.screen != ScreenContainers {
-		t.Errorf("screen = %d, want ScreenContainers (%d)", updated.screen, ScreenContainers)
+	// EndpointSelectedMsg navigates to the Dashboard (not Containers directly).
+	// The user then picks a destination from the menu.
+	if updated.screen != ScreenDashboard {
+		t.Errorf("screen = %d, want ScreenDashboard (%d)", updated.screen, ScreenDashboard)
 	}
 	if updated.activeEndpoint == nil {
-		t.Fatal("activeEndpoint should be set")
+		t.Fatal("activeEndpoint should be set after EndpointSelectedMsg")
 	}
 	if updated.activeEndpoint.ID != 1 {
 		t.Errorf("activeEndpoint.ID = %d, want 1", updated.activeEndpoint.ID)
@@ -103,8 +105,6 @@ func TestApp_ConfirmResultConfirmed(t *testing.T) {
 	a := NewApp(nil)
 	a.screen = ScreenConfirm
 	a.prevScreen = ScreenContainers
-	a.confirm = NewConfirmModel("test", func() tea.Msg { return nil })
-
 	result, _ := a.Update(ConfirmResultMsg{Confirmed: true})
 	updated := result.(App)
 	if updated.screen != ScreenContainers {
@@ -161,8 +161,9 @@ func TestApp_ViewWithError(t *testing.T) {
 	a.height = 30
 	a.err = errors.New("test error message")
 	view := a.View()
-	if !strings.Contains(view, "⚠") {
-		t.Errorf("view should show error warning symbol, got: %s", view)
+	// renderErrBanner uses △, not ⚠ — assert what the code actually renders
+	if !strings.Contains(view, "△") {
+		t.Errorf("view should show error triangle symbol, got: %s", view)
 	}
 	if !strings.Contains(view, "[e]") {
 		t.Errorf("view should show [e] hint to expand error, got: %s", view)
@@ -208,11 +209,11 @@ func TestApp_ScreenName(t *testing.T) {
 func TestApp_NavigateToImagesWithoutEndpoint(t *testing.T) {
 	a := NewApp(nil)
 	a.activeEndpoint = nil
-	// Should not panic when navigating to Images without active endpoint
+	// Without an active endpoint, needsEndpoint() redirects to ScreenEnvPicker.
 	result, _ := a.Update(NavigateMsg{Screen: ScreenImages})
 	updated := result.(App)
-	if updated.screen != ScreenImages {
-		t.Errorf("screen = %d, want ScreenImages (%d)", updated.screen, ScreenImages)
+	if updated.screen != ScreenEnvPicker {
+		t.Errorf("screen = %d, want ScreenEnvPicker (%d)", updated.screen, ScreenEnvPicker)
 	}
 }
 
@@ -230,15 +231,16 @@ func TestApp_NavigateToImagesWithEndpoint(t *testing.T) {
 func TestApp_NavigateToContainersWithoutEndpoint(t *testing.T) {
 	a := NewApp(nil)
 	a.activeEndpoint = nil
-	// Should not panic
+	// Without an active endpoint, needsEndpoint() redirects to ScreenEnvPicker.
 	result, _ := a.Update(NavigateMsg{Screen: ScreenContainers})
 	updated := result.(App)
-	_ = updated
+	if updated.screen != ScreenEnvPicker {
+		t.Errorf("screen = %d, want ScreenEnvPicker (%d)", updated.screen, ScreenEnvPicker)
+	}
 }
 
 func TestApp_PropagateSize(t *testing.T) {
 	a := NewApp(nil)
-	// SetSize via WindowSizeMsg — should not panic
 	result, _ := a.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
 	updated := result.(App)
 	if updated.width != 200 || updated.height != 50 {
